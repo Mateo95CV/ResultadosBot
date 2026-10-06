@@ -1,0 +1,69 @@
+RESULTADOS DEL BOT DE COBRANZA - VERSIÓN DE ESCRITORIO
+=======================================================
+
+Contenido de la carpeta
+-----------------------
+app\index.html   La aplicación (todo incluido, funciona sin internet).
+main.py          Abre la aplicación en una ventana de Windows.
+compilar.bat     Genera el ejecutable ResultadosBot.exe.
+probar.bat       Abre la aplicación sin compilar (para revisar cambios).
+icono.ico        Ícono del programa.
+.github\         Opcional: compilación automática en GitHub.
+
+
+PASO 1. Instalar Python (solo en el equipo donde se compila)
+------------------------------------------------------------
+1. Descargar Python 3.12 desde https://www.python.org/downloads/windows/
+   (usar 3.12: las versiones más nuevas pueden no ser compatibles con pywebview).
+2. Al instalar, MARCAR la casilla "Add python.exe to PATH".
+3. Las librerías (pywebview y PyInstaller) se instalan solas en el paso 2.
+
+
+PASO 2. Generar el ejecutable
+-----------------------------
+1. Doble clic en compilar.bat.
+2. Esperar de 2 a 5 minutos. Al final se abre la carpeta "dist" con
+   ResultadosBot.exe.
+3. Si la red de la empresa usa proxy y falla la descarga de librerías,
+   pedir a TI que permita pypi.org y files.pythonhosted.org, o compilar
+   desde otra red.
+
+
+PASO 3. Entregar a la líder
+---------------------------
+- Solo se le entrega el archivo dist\ResultadosBot.exe.
+- En su equipo NO hay que instalar Python ni nada más.
+- Requisito: Microsoft Edge WebView2 Runtime. Viene incluido en Windows 10
+  actualizado y en Windows 11. Si la ventana sale en blanco o no abre,
+  TI puede instalarlo desde:
+  https://developer.microsoft.com/microsoft-edge/webview2/
+
+
+Qué pedirle a TI
+----------------
+- Permitir la ejecución de ResultadosBot.exe (programas hechos con
+  PyInstaller a veces son marcados por el antivirus como falso positivo).
+- Si es necesario, que lo firmen digitalmente o lo agreguen a la lista
+  de aplicaciones permitidas.
+- Confirmar que el equipo tiene WebView2 Runtime.
+
+
+Dónde guarda cosas el programa
+------------------------------
+- Las reglas y tarifas que ajuste la líder:
+  %LOCALAPPDATA%\ResultadosBot
+- El Excel descargado: donde ella elija en el cuadro "Guardar como".
+- Los archivos que carga no se copian ni se envían a ningún lado.
+
+
+Si se actualiza la aplicación
+-----------------------------
+Reemplazar app\index.html por la nueva versión, volver a ejecutar
+compilar.bat y entregar el nuevo ResultadosBot.exe.
+
+
+Compilar sin instalar Python (opcional)
+---------------------------------------
+Subir esta carpeta a un repositorio de GitHub. En la pestaña "Actions",
+ejecutar "Compilar ejecutable". Al terminar, el .exe queda para descargar
+en la sección "Artifacts" de esa ejecución.
