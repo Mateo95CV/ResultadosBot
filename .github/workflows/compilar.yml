@@ -1,0 +1,19 @@
+name: Compilar ejecutable
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: pyinstaller --noconfirm --clean --onefile --windowed --name "ResultadosBot" --icon "icono.ico" --add-data "app;app" main.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ResultadosBot
+          path: dist/ResultadosBot.exe
