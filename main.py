@@ -132,6 +132,12 @@ class Api:
         self._hist.borrar_carga(int(carga_id))
         return True
 
+    def historial_vaciar(self):
+        try:
+            return json.dumps({"ok": True, "respaldo": self._hist.vaciar()})
+        except Exception as e:  # noqa: BLE001
+            return json.dumps({"ok": False, "error": str(e)})
+
     def historial_abrir_carpeta(self):
         try:
             abrir_en_windows(os.path.dirname(self._hist.ruta))
