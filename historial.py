@@ -192,6 +192,19 @@ class Historial:
         finally:
             otro.close()
 
+    def vaciar(self):
+        """Deja el histórico en blanco, guardando antes una copia de respaldo al lado."""
+        carpeta = os.path.dirname(self.ruta)
+        respaldo = os.path.join(carpeta, "respaldo_antes_de_vaciar_" + datetime.now().strftime("%Y-%m-%d_%H%M") + ".db")
+        self.copiar_a(respaldo)
+        with self._con() as con:
+            con.execute("DELETE FROM registros")
+            con.execute("DELETE FROM cobertura_pagos")
+            con.execute("DELETE FROM cargas")
+        with self._con() as con:
+            con.execute("VACUUM")
+        return respaldo
+
     def copiar_a(self, destino):
         """Copia segura del histórico (funciona aunque esté en uso)."""
         dst = sqlite3.connect(destino)
