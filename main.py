@@ -72,17 +72,40 @@ def abrir_en_windows(ruta):
         os.startfile(ruta)  # type: ignore[attr-defined]
 
 
+def nombre_historial(campana):
+    # Agaval conserva el nombre original para no perder el histórico que ya existe.
+    return NOMBRE_HISTORIAL if campana == "agaval" else f"historial_{campana}.db"
+
+
+def ruta_historial(campana):
+    cfg = leer_config()
+    ruta = cfg.get("campanas", {}).get(campana, {}).get("ruta")
+    if not ruta and campana == "agaval":
+        ruta = cfg.get("ruta_historial")  # configuración de versiones anteriores
+    return ruta or os.path.join(carpeta_datos(), nombre_historial(campana))
+
+
+def abrir_historial(campana):
+    try:
+        return Historial(ruta_historial(campana))
+    except Exception:  # noqa: BLE001  (por ejemplo, una carpeta de red que ya no existe)
+        return Historial(os.path.join(carpeta_datos(), nombre_historial(campana)))
+
+
 class Api:
     """Funciones que la página puede llamar desde JavaScript."""
 
     def __init__(self):
         self._ventana = None  # con guion bajo para que no se exponga a la página
-        cfg = leer_config()
-        ruta = cfg.get("ruta_historial") or os.path.join(carpeta_datos(), NOMBRE_HISTORIAL)
-        try:
-            self._hist = Historial(ruta)
-        except Exception:  # noqa: BLE001  (por ejemplo, una carpeta de red que ya no existe)
-            self._hist = Historial(os.path.join(carpeta_datos(), NOMBRE_HISTORIAL))
+        self._campana = "agaval"
+        self._hist = abrir_historial(self._campana)
+
+    def historial_campana(self, campana):
+        campana = "".join(ch for ch in str(campana).lower() if ch.isalnum()) or "agaval"
+        if campana != self._campana:
+            self._campana = campana
+            self._hist = abrir_historial(campana)
+        return True
 
     # ------------------------------------------------------------ Excel
     def guardar_excel(self, contenido_b64, nombre):
@@ -150,16 +173,16 @@ class Api:
         if not carpeta:
             return json.dumps({"ok": False, "cancelado": True})
         try:
-            nueva = self._hist.mover_a(os.path.join(carpeta, NOMBRE_HISTORIAL))
+            nueva = self._hist.mover_a(os.path.join(carpeta, nombre_historial(self._campana)))
             cfg = leer_config()
-            cfg["ruta_historial"] = nueva
+            cfg.setdefault("campanas", {}).setdefault(self._campana, {})["ruta"] = nueva
             guardar_config(cfg)
             return json.dumps({"ok": True, "ruta": nueva})
         except Exception as e:  # noqa: BLE001
             return json.dumps({"ok": False, "error": str(e)})
 
     def historial_exportar(self):
-        nombre = "historial_resultados_bot_" + datetime.now().strftime("%Y-%m-%d") + ".db"
+        nombre = f"historial_{self._campana}_" + datetime.now().strftime("%Y-%m-%d") + ".db"
         ruta = primera(self._ventana.create_file_dialog(
             tipo_dialogo("SAVE"), directory=carpeta_descargas(), save_filename=nombre,
             file_types=("Histórico (*.db)",),
