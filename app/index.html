@@ -166,6 +166,15 @@ button{font:inherit}
 .histstats span{color:var(--muted);font-size:.82rem}
 .btn.danger{color:var(--alert)}
 .checklist .h{font-size:.82rem;color:var(--brand);font-weight:600}
+.camptabs{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:-8px 0 22px}
+.camptabs .lbl{font-weight:600;color:var(--muted);font-size:.92rem}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px;gap:4px}
+.seg button{border:0;background:transparent;color:var(--ink);font:inherit;font-weight:700;padding:8px 20px;border-radius:8px;cursor:pointer}
+.seg button:hover{background:var(--surface-2)}
+.seg button[aria-selected="true"]{background:var(--brand);color:#fff}
+.seg button:focus-visible{outline:3px solid var(--brand);outline-offset:2px}
+.codes{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.codes span{background:var(--surface-2);border-radius:999px;padding:4px 10px;font-size:.85rem}
 /* Dos columnas */
 .two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
 @media (max-width:900px){.two{grid-template-columns:1fr}}
@@ -229,6 +238,11 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
     </div>
     <div class="period" id="period"></div>
   </header>
+  <nav class="camptabs" aria-label="Campaña">
+    <span class="lbl" id="campLbl">Campaña</span>
+    <div class="seg" role="tablist" aria-labelledby="campLbl" id="campTabs"></div>
+    <span class="hint" id="campHint"></span>
+  </nav>
 
   <!-- CARGA -->
   <section aria-labelledby="h-load">
@@ -252,7 +266,7 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
       </div>
     </div>
     <details class="panel hidden" id="histPanel">
-      <summary>Histórico guardado <span class="hint" id="histSummary"></span></summary>
+      <summary>Histórico guardado <span id="histCamp"></span> <span class="hint" id="histSummary"></span></summary>
       <div id="histBody"></div>
     </details>
     <div class="notices" id="notices"></div>
@@ -393,6 +407,7 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
         <input type="number" min="0" step="0.000001" data-p="costoChar">
       </label>
     </div>
+    <div style="margin-top:16px"><b>Códigos del bot en esta campaña</b><div class="codes" id="campCodes"></div></div>
     <div class="load-actions"><button class="btn" id="btnDefaults" type="button">Volver a los valores iniciales</button></div>
   </details>
 </div>
@@ -403,9 +418,22 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
 
 /* ---------- Parámetros ---------- */
 const DEFAULTS = {gracia:2, ventana:30, tarifaMeta:61, cobrarNoEntregados:false, interacciones:4, costoInteraccion:11, costoChar:0.002146};
-let P = Object.assign({}, DEFAULTS);
-try { const s = JSON.parse(localStorage.getItem("botcobranza.params")||"null"); if (s) P = Object.assign({}, DEFAULTS, s); } catch(e){}
-function saveParams(){ try { localStorage.setItem("botcobranza.params", JSON.stringify(P)); } catch(e){} }
+/* Campañas: cada una con sus códigos del bot. "prioridad" indica si manda el código o el texto del archivo de gestiones. */
+const CAMPAIGNS = {
+  agaval:{nombre:"Agaval", prioridad:"texto", codigos:{"01":"Acuerdo de pago","09":"Contactado","23":"Asesor","11":"Equivocado"}},
+  haceb:{nombre:"Haceb", prioridad:"codigo", codigos:{"01":"Acuerdo de pago","42":"Contactado","37":"Asesor","08":"Equivocado"}}
+};
+let CAMP="agaval";
+try { const c=localStorage.getItem("botcobranza.camp"); if(c&&CAMPAIGNS[c]) CAMP=c; } catch(e){}
+const CAMPN=()=>CAMPAIGNS[CAMP].nombre;
+function paramsKey(c){ return "botcobranza.params."+c; }
+function loadParams(){
+  let s=null;
+  try { s=JSON.parse(localStorage.getItem(paramsKey(CAMP))||"null"); if(!s&&CAMP==="agaval") s=JSON.parse(localStorage.getItem("botcobranza.params")||"null"); } catch(e){}
+  return Object.assign({}, DEFAULTS, s||{});
+}
+let P = loadParams();
+function saveParams(){ try { localStorage.setItem(paramsKey(CAMP), JSON.stringify(P)); } catch(e){} }
 
 /* ---------- Tipos de archivo ---------- */
 const TYPES = [
@@ -508,7 +536,7 @@ function detect(aoa){
 }
 async function addFiles(list){
   const st=$("#status"); st.className="status";
-  const unknown=[];
+  const unknown=[], skipped=[];
   for(const f of list){
     if(FILES.some(x=>x.name===f.name&&x.size===f.size)) continue;
     st.innerHTML='<span class="spinner"></span>Leyendo '+esc(f.name)+"…";
@@ -518,11 +546,14 @@ async function addFiles(list){
       const sheets=toSheets(f.name,buf);
       let found=null; for(const s of sheets){ found=detect(s); if(found) break; }
       if(!found){ unknown.push(f.name); continue; }
+      const lower=f.name.toLowerCase();
+      const otra=Object.keys(CAMPAIGNS).find(k=>k!==CAMP&&lower.includes(k));
+      if(otra&&!lower.includes(CAMP)&&!confirm("El archivo “"+f.name+"” parece ser de "+CAMPAIGNS[otra].nombre+", pero estás en la pestaña "+CAMPN()+".\n\n¿Cargarlo de todas formas en "+CAMPN()+"?")){ skipped.push(f.name); continue; }
       FILES.push({name:f.name,size:f.size,...found});
     }catch(e){ console.error(e); unknown.push(f.name); }
   }
-  const unk = unknown.length ? "No se reconoció: "+unknown.join(", ")+". Revisa que sea uno de los seis archivos de la lista." : "";
-  st.textContent=unk; if(unknown.length) st.className="status err";
+  const unk = (unknown.length ? "No se reconoció: "+unknown.join(", ")+". Revisa que sea uno de los seis archivos de la lista." : "")+(skipped.length?" No se cargó: "+skipped.join(", ")+".":"");
+  st.textContent=unk; if(unknown.length||skipped.length) st.className="status err";
   const nuevos=FILES.filter(f=>!f.saved);
   if(nuevos.length) CLEARED=false;
   if(MODE==="desktop"&&nuevos.length){
@@ -558,8 +589,12 @@ const META_RANK={read:4,delivered:3,accepted:2,failed:1};
 const META_LABEL={read:"Leído",delivered:"Entregado",accepted:"Aceptado sin confirmar",failed:"Fallido","":"Sin registro"};
 const TIPOS=["base","campaign","gestiones","chat","nlp","pagos"];
 function normBot(text,code){
+  const cfg=CAMPAIGNS[CAMP];
+  const c=blank(code)?"":String(code).trim().replace(/\.0+$/,"").padStart(2,"0");
+  const byCode=(cfg.codigos[c]||"").toLowerCase();
   let t=fixText(text).toLowerCase().replace(/_/g," ").trim();
-  if(blank(t)){ const c=String(code??"").trim().padStart(2,"0"); t=({"01":"acuerdo de pago","09":"contactado","23":"asesor","11":"equivocado"})[c]||""; }
+  if(cfg.prioridad==="codigo"&&byCode) t=byCode;
+  else if(blank(t)) t=byCode;
   if(!t) return "Sin resultado";
   if(t.startsWith("acuerdo")) return "Acuerdo de pago";
   if(t.startsWith("asesor")) return "Asesor";
@@ -996,6 +1031,7 @@ function renderHistory(){
   const c=DBINFO.conteo||{}, rg=DBINFO.rango||{};
   const span=t=>rg[t]&&rg[t][0]!=null?fmtDay(rg[t][0])+" al "+fmtDay(rg[t][1]):"";
   const cov=mergeIntervals((HIST&&HIST.cobertura)||[]);
+  $("#histCamp").textContent="de "+CAMPN();
   $("#histSummary").textContent=DBINFO.cargas.length?int(DBINFO.cargas.length)+" carga"+(DBINFO.cargas.length===1?"":"s")+(rg.base?", envíos del "+span("base"):""):"vacío";
   const stat=(v,l)=>'<div><b class="num">'+v+'</b><span>'+l+'</span></div>';
   let h='<div class="histstats">'+stat(int(c.base||0),"envíos "+(span("base")?"("+span("base")+")":""))+stat(int(c.gestiones||0),"conversaciones del bot")+stat(int(c.chat||0),"chats de asesoras")+stat(int(c.pagos||0),"pagos de clientes gestionados")+
@@ -1039,14 +1075,42 @@ function renderHistory(){
     }catch(e){ hs.className="status err"; hs.textContent="Ocurrió un error: "+(e&&e.message||e); }
   });
 }
+const FILES_BY={};
+function renderCampaign(){
+  $("#campTabs").innerHTML=Object.entries(CAMPAIGNS).map(([k,c])=>'<button type="button" role="tab" data-camp="'+k+'" aria-selected="'+(k===CAMP)+'">'+esc(c.nombre)+'</button>').join("");
+  $("#campTabs").querySelectorAll("[data-camp]").forEach(b=>b.onclick=()=>switchCampaign(b.dataset.camp));
+  $("#campHint").textContent=MODE==="desktop"?"Cada campaña tiene su propio histórico, sus códigos y sus tarifas.":"Cada campaña tiene sus propios códigos y tarifas.";
+  $("#campCodes").innerHTML=Object.entries(CAMPAIGNS[CAMP].codigos).map(([c,l])=>'<span><b>'+esc(c)+'</b> '+esc(l)+'</span>').join("");
+  document.title="Resultados del bot de cobranza: "+CAMPN();
+}
+let switching=false;
+async function switchCampaign(c){
+  if(c===CAMP||!CAMPAIGNS[c]||switching) return;
+  switching=true;
+  try{
+    FILES_BY[CAMP]=FILES; CAMP=c; FILES=FILES_BY[c]||[];
+    try{ localStorage.setItem("botcobranza.camp",c); }catch(e){}
+    P=loadParams(); syncInputs();
+    CLEARED=false; R=null; filter="todos"; query=""; page=0; $("#search").value="";
+    document.querySelectorAll(".chip").forEach(x=>x.setAttribute("aria-pressed",String(x.dataset.f==="todos")));
+    const st=$("#status"); st.className="status"; st.textContent="";
+    renderCampaign();
+    if(MODE==="desktop"){
+      st.innerHTML='<span class="spinner"></span>Abriendo el histórico de '+esc(CAMPN())+'…';
+      await API().historial_campana(c); await reloadHistory(); st.textContent="";
+    }
+    run();
+  }catch(e){ const st=$("#status"); st.className="status err"; st.textContent="No se pudo cambiar de campaña: "+(e&&e.message||e); }
+  finally{ switching=false; }
+}
 async function initDesktop(){
   if(MODE==="desktop"||!(window.pywebview&&window.pywebview.api&&window.pywebview.api.historial_datos)) return;
-  MODE="desktop"; PERIOD="ult30"; $("#periodSel").value=PERIOD;
+  MODE="desktop"; PERIOD="ult30"; $("#periodSel").value=PERIOD; renderCampaign();
   $("#btnClear").textContent="Limpiar pantalla";
   $("#btnClear").title="Deja la pantalla en blanco. Lo guardado sigue en el histórico.";
   $(".sub").textContent="Carga los archivos nuevos y quedan guardados en el histórico del equipo. Escoge el periodo para ver envíos, conversaciones, asesoras, pagos atribuidos y costos.";
   const st=$("#status"); st.innerHTML='<span class="spinner"></span>Abriendo el histórico…';
-  try{ await reloadHistory(); st.textContent=""; }catch(e){ st.className="status err"; st.textContent="No se pudo abrir el histórico: "+(e&&e.message||e); }
+  try{ await API().historial_campana(CAMP); await reloadHistory(); st.textContent=""; }catch(e){ st.className="status err"; st.textContent="No se pudo abrir el histórico: "+(e&&e.message||e); }
   run();
 }
 window.addEventListener("pywebviewready",initDesktop);
@@ -1067,7 +1131,7 @@ async function exportExcel(){
   if(!R) return;
   const a=R.attr, c=R.cost;
   const resumen=[
-    ["Resultados del bot de cobranza"],[],
+    ["Resultados del bot de cobranza: "+CAMPN()],[],
     ["Envíos analizados", fmtDay(R.firstSend)+" al "+fmtDay(R.lastSend)],["Pagos", R.pMin!=null?fmtDay(R.pMin)+" al "+fmtDay(R.pMax):"Sin archivo"],[],
     ["Mensajes enviados",R.enviados],["Leídos",R.leidos],["Entregados (incluye leídos)",R.entregados],["Aceptados sin confirmar",R.metaCount.accepted],["Fallidos",R.metaCount.failed],["Conversaron con el bot",R.conv],["Acuerdos del bot",R.acuerdos],["Pasaron a asesora",R.aAsesor],["Clientes que pagaron",R.pagaron],[],
     ["Atribución","Clientes","Valor"],["Directo",a.Directo.n,a.Directo.v],["Asesor",a.Asesor.n,a.Asesor.v],["Indirecto",a.Indirecto.n,a.Indirecto.v],[],
@@ -1085,7 +1149,7 @@ async function exportExcel(){
   const ws2=XLSX.utils.json_to_sheet(detalle); ws2["!cols"]=Object.keys(detalle[0]||{}).map(k=>({wch:Math.max(12,k.length+2)})); ws2["!autofilter"]={ref:ws2["!ref"]};
   XLSX.utils.book_append_sheet(wb,ws2,"Detalle");
   const ws3=XLSX.utils.json_to_sheet(pagos.length?pagos:[{"Sin pagos":""}]); XLSX.utils.book_append_sheet(wb,ws3,"Pagos atribuidos");
-  const fname="Resultados_bot_"+(R.firstSend!=null?fmtDay(R.firstSend).replace(/\//g,"-")+"_a_"+fmtDay(R.lastSend).replace(/\//g,"-"):"periodo")+".xlsx";
+  const fname="Resultados_bot_"+CAMPN()+"_"+(R.firstSend!=null?fmtDay(R.firstSend).replace(/\//g,"-")+"_a_"+fmtDay(R.lastSend).replace(/\//g,"-"):"periodo")+".xlsx";
   await saveWorkbook(wb,fname,st);
 }
 async function saveWorkbook(wb,fname,st){
@@ -1119,7 +1183,7 @@ async function exportGrupo(){
   ws["!cols"]=Object.keys(rows[0]).map(k=>({wch:Math.max(12,k.length+2)}));
   XLSX.utils.book_append_sheet(wb,ws,mode==="fecha"?"Por envío":"Por cartera");
   const per=R.firstSend!=null?fmtDay(R.firstSend).replace(/\//g,"-")+"_a_"+fmtDay(R.lastSend).replace(/\//g,"-"):"periodo";
-  await saveWorkbook(wb,"Resultados_por_"+(mode==="fecha"?"envio":"cartera")+"_"+per+".xlsx",st);
+  await saveWorkbook(wb,"Resultados_por_"+(mode==="fecha"?"envio":"cartera")+"_"+CAMPN()+"_"+per+".xlsx",st);
 }
 function fmtMins(m){ if(m==null||!m) return ""; const d=Math.floor(m/1440), r=Math.round(m-d*1440); return fmtDay(d)+" "+String(Math.floor(r/60)).padStart(2,"0")+":"+String(r%60).padStart(2,"0"); }
 async function exportHistorico(st){
@@ -1133,7 +1197,7 @@ async function exportHistorico(st){
   sheet("Pagos",HIST.pagos.map(p=>({"Fecha de pago":fmtDay(p.d),"Cédula":p.nit,"Crédito":p.cred,"Valor pagado":p.valor,"Canal en cartera":p.canal,"Gestor":p.gestor})));
   sheet("NLP",HIST.nlp.map(n=>({"Archivo":n.archivo||"","Fecha del archivo":fmtDay(n.d),"Caracteres":n.chars})));
   sheet("Cargas",(DBINFO&&DBINFO.cargas||[]).map(c=>({"Fecha de carga":c.fecha,"Archivos":c.archivos.map(a=>a.nombre||a).join(", "),"Información nueva":TIPOS.filter(t=>c.resumen&&c.resumen[t]).map(t=>cuantos(c.resumen[t],t)).join(", "),"Origen":c.origen})));
-  await saveWorkbook(wb,"Historico_resultados_bot_"+fmtDay(todayDay()).replace(/\//g,"-")+".xlsx",st);
+  await saveWorkbook(wb,"Historico_"+CAMPN()+"_"+fmtDay(todayDay()).replace(/\//g,"-")+".xlsx",st);
 }
 const FILTER_NAME={todos:"todos",pago:"con_pago",acuerdo:"acuerdos_bot",asesor:"asesora",incumplido:"incumplidos"};
 async function exportDetalle(){
@@ -1147,7 +1211,7 @@ async function exportDetalle(){
   ws["!cols"]=Object.keys(data[0]).map(k=>({wch:Math.max(12,k.length+2)}));
   ws["!autofilter"]={ref:ws["!ref"]};
   XLSX.utils.book_append_sheet(wb,ws,"Detalle");
-  const fname="Detalle_clientes_"+FILTER_NAME[filter]+"_"+(R.pMax!=null?fmtDay(R.pMax).replace(/\//g,"-"):"periodo")+".xlsx";
+  const fname="Detalle_clientes_"+CAMPN()+"_"+FILTER_NAME[filter]+"_"+(R.pMax!=null?fmtDay(R.pMax).replace(/\//g,"-"):"periodo")+".xlsx";
   await saveWorkbook(wb,fname,st);
 }
 
@@ -1180,6 +1244,7 @@ function syncInputs(){ document.querySelectorAll("[data-p]").forEach(el=>{ const
 document.querySelectorAll("[data-p]").forEach(el=>el.addEventListener("change",()=>{ const k=el.dataset.p; P[k]=el.type==="checkbox"?el.checked:Math.max(0,parseFloat(el.value)||0); saveParams(); if(R) run(); }));
 $("#btnDefaults").addEventListener("click",()=>{ P=Object.assign({},DEFAULTS); saveParams(); syncInputs(); if(R) run(); });
 syncInputs();
+renderCampaign();
 $("#periodSel").value=PERIOD;
 if(typeof XLSX==="undefined"){ $("#status").className="status err"; $("#status").textContent="No se pudo cargar el lector de Excel. Revisa la conexión y recarga la página."; }
 renderChecklist();
