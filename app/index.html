@@ -420,12 +420,20 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
 const DEFAULTS = {gracia:2, ventana:30, tarifaMeta:61, cobrarNoEntregados:false, interacciones:4, costoInteraccion:11, costoChar:0.002146};
 /* Campañas: cada una con sus códigos del bot. "prioridad" indica si manda el código o el texto del archivo de gestiones. */
 const CAMPAIGNS = {
-  agaval:{nombre:"Agaval", prioridad:"texto", codigos:{"01":"Acuerdo de pago","09":"Contactado","23":"Asesor","11":"Equivocado"}},
-  haceb:{nombre:"Haceb", prioridad:"codigo", codigos:{"01":"Acuerdo de pago","42":"Contactado","37":"Asesor","08":"Equivocado"}}
+  agaval:{nombre:"Agaval", prioridad:"texto", codigos:{"01":"Acuerdo de pago","09":"Contactado","23":"Asesor","11":"Equivocado"},
+    cruce:"credito", credito:"OPT5",
+    campos:[["cartera","OPT1","Estado cartera","texto"],["diasMora","OPT2","Días mora","num"],["cuota","OPT3","Valor cuota","num"],["mora","OPT4","Valor en mora","num"],["cuotas","OPT6","Cuotas en mora","num"]]},
+  haceb:{nombre:"Haceb", prioridad:"codigo", codigos:{"01":"Acuerdo de pago","42":"Contactado","37":"Asesor","08":"Equivocado"},
+    cruce:"nit", credito:null,
+    campos:[["diasMora","OPT1","Días mora","num"],["cuotas","OPT2","Número de cuotas","num"],["saldo","OPT3","Saldo total","num"],["fLimite","OPT5","Fecha límite","texto"]]}
 };
 let CAMP="agaval";
 try { const c=localStorage.getItem("botcobranza.camp"); if(c&&CAMPAIGNS[c]) CAMP=c; } catch(e){}
 const CAMPN=()=>CAMPAIGNS[CAMP].nombre;
+const CFG=()=>CAMPAIGNS[CAMP];
+const porCredito=()=>CFG().cruce==="credito";
+const tieneCampo=k=>CFG().campos.some(c=>c[0]===k);
+function camposDe(o){ const r={}; for(const [k,,lbl] of CFG().campos) r[lbl]=o[k]??""; return r; }
 function paramsKey(c){ return "botcobranza.params."+c; }
 function loadParams(){
   let s=null;
@@ -448,7 +456,7 @@ const TYPES = [
   {id:"nlp", t:"Consumo NLP", d:"HistCDR de Wolkvox: caracteres consumidos por la inteligencia artificial.",
    test:h=>h.includes("NLP_TYPE")&&h.includes("TOTAL_CHARS")},
   {id:"pagos", t:"Pagos", d:"Informe de pagos de cartera. Idealmente desde el primer envío hasta hoy.", req:true,
-   test:h=>h.includes("Valor Pagado")&&h.includes("Obligacion")}
+   test:h=>h.includes("Valor Pagado")&&h.includes("Nit")&&h.includes("Fecha de Pago")}
 ];
 let FILES = []; // {name,size,type,headers,rows}
 
@@ -622,11 +630,13 @@ function canonFromFiles(files,knownNits){
   for(const f of files.filter(f=>f.type==="base")){
     const day=dayFromName(f.name);
     for(const r of f.rows){
-      const o=rowObj(f.headers,r); const nit=normId(o.ID), cred=normCred(o.OPT5); if(!nit) continue;
+      const o=rowObj(f.headers,r); const nit=normId(o.ID); if(!nit) continue;
+      const cfg=CFG(); const cred=cfg.cruce==="credito"?normCred(o[cfg.credito]):"";
       nits.add(nit);
-      push("base",{k:nit+"|"+cred+"|"+(day??""),d:day,nit,cred,tel:normTel(o.TEL1),
-        name:fixText([o.NOMBRE,o.APELLIDO].filter(x=>!blank(x)).join(" ")),
-        cartera:blank(o.OPT1)?"Sin dato":fixText(o.OPT1),diasMora:num(o.OPT2),cuota:num(o.OPT3),mora:num(o.OPT4),cuotas:num(o.OPT6)});
+      const rec={k:nit+"|"+cred+"|"+(day??""),d:day,nit,cred,tel:normTel(o.TEL1),
+        name:fixText([o.NOMBRE,o.APELLIDO].filter(x=>!blank(x)).join(" ")),cartera:"Sin dato"};
+      for(const [k,col,,tipo] of cfg.campos){ const v=o[col]; rec[k]=tipo==="num"?num(v):(blank(v)?(k==="cartera"?"Sin dato":""):fixText(v)); }
+      push("base",rec);
     }
   }
   for(const f of files.filter(f=>f.type==="campaign")) for(const r of f.rows){
@@ -661,8 +671,9 @@ function canonFromFiles(files,knownNits){
       if(d!=null){ mn=mn==null?d:Math.min(mn,d); mx=mx==null?d:Math.max(mx,d); }
       const v=num(o["Valor Pagado"]); if(v<=0) continue;
       const nit=normId(o.Nit); if(!nits.has(nit)) continue;
-      const cred=normCred(o.Obligacion);
-      push("pagos",{k:[nit,cred,d,v,num(o["Valor Abono Capital"]),num(o["Valor Abono Intereses"]),fixText(o["Grabador Pago"])].join("|"),
+      const oblig=normCred(o.Obligacion);
+      const cred=porCredito()?oblig:"";
+      push("pagos",{oblig,k:[nit,oblig,d,v,num(o["Valor Abono Capital"]),num(o["Valor Abono Intereses"]),fixText(o["Grabador Pago"])].join("|"),
         d,nit,cred,valor:v,canal:fixText(o["Estado de Cobro"]),gestor:fixText(o.Asesor)});
     }
     if(mn!=null) C.cobertura.push([mn,mx]);
@@ -717,7 +728,7 @@ function compute(C,rng){
     ob.sends.sort((a,b)=>(a.day??0)-(b.day??0));
     ob.first=ob.sends[0].day; ob.last=ob.sends[ob.sends.length-1].day;
     ob.meta=""; for(const s of ob.sends) if((META_RANK[s.meta]||0)>(META_RANK[ob.meta]||0)) ob.meta=s.meta;
-    const l=ob.sends[ob.sends.length-1]; ob.cartera=l.cartera; ob.mora=l.mora; ob.diasMora=l.diasMora; ob.cuota=l.cuota;
+    const l=ob.sends[ob.sends.length-1]; for(const k of ["cartera","mora","diasMora","cuota","cuotas","saldo","fLimite"]) ob[k]=l[k]; if(ob.cartera==null) ob.cartera="Sin dato";
   }
 
   /* Gestiones del bot */
@@ -891,7 +902,7 @@ function renderMoney(){
   const card=(k,c,o,cls)=>'<div class="m '+(cls||"")+'"><div class="k"><span class="sw" style="background:'+c+'"></span>'+k+'</div><div class="v num">'+money(o.v)+'</div><div class="n num">'+int(o.n)+' cliente'+(o.n===1?"":"s")+'</div></div>';
   $("#money").innerHTML='<div class="m total"><div class="k">Recaudo de clientes gestionados</div><div class="v num">'+money(tot)+'</div><div class="n num">'+int(a.Directo.n+a.Asesor.n+a.Indirecto.n)+' clientes pagaron</div></div>'+
     card("Directo","var(--brand)",a.Directo)+card("Asesor","var(--asesor)",a.Asesor)+card("Indirecto","var(--indirecto)",a.Indirecto);
-  $("#moneyHint").textContent=R.pMin!=null?"Pagos cargados del "+fmtDay(R.pMin)+" al "+fmtDay(R.pMax)+", hasta "+P.ventana+" días después del último envío, cruzados por cédula y crédito.":"";
+  $("#moneyHint").textContent=R.pMin!=null?"Pagos cargados del "+fmtDay(R.pMin)+" al "+fmtDay(R.pMax)+", hasta "+P.ventana+" días después del último envío, cruzados "+(porCredito()?"por cédula y crédito.":"por cédula (créditos unificados)."):"";
 }
 function rowsBlock(items,total,colorFn,tagFn){
   if(!items.length) return '<div class="empty">Sin datos.</div>';
@@ -963,7 +974,7 @@ function renderDetail(){
   const slice=rows.slice(page*PAGE,page*PAGE+PAGE);
   const tag=(t)=>t?'<span class="tag '+tagClass(t)+'">'+esc(t)+'</span>':"";
   $("#detail").innerHTML='<thead><tr><th>Cliente</th><th>Cédula</th><th>Crédito</th><th>Envíos</th><th>Meta</th><th>Bot</th><th class="r">Valor acuerdo</th><th>Fecha acuerdo</th><th>Asesora</th><th class="r">Pagado</th><th>Último pago</th><th>Cumplimiento</th><th>Atribución</th></tr></thead><tbody>'+
-    (slice.length?slice.map(o=>'<tr><td>'+esc(o.name)+'</td><td class="num">'+esc(o.nit)+'</td><td>'+esc(o.cred)+'</td><td>'+o.sends.map(s=>shortDay(s.day)).join(", ")+'</td><td>'+esc(META_LABEL[o.meta])+'</td><td>'+esc(o.botRes||"No conversó")+'</td><td class="r num">'+(o.acuerdo?money(o.acuerdo.vAcuerdo):"")+'</td><td>'+(o.acuerdo?fmtDay(o.acuerdo.fAcuerdo):"")+'</td><td>'+esc(o.aseRes)+'</td><td class="r num">'+(o.paid?money(o.paid):"")+'</td><td>'+fmtDay(o.lastPay)+'</td><td>'+tag(o.cumpl)+'</td><td>'+tag(o.attr)+'</td></tr>').join(""):'<tr><td colspan="13" class="empty">No hay clientes con este filtro.</td></tr>')+'</tbody>';
+    (slice.length?slice.map(o=>'<tr><td>'+esc(o.name)+'</td><td class="num">'+esc(o.nit)+'</td><td>'+(porCredito()?esc(o.cred):'<span class="hint">Unificado</span>')+'</td><td>'+o.sends.map(s=>shortDay(s.day)).join(", ")+'</td><td>'+esc(META_LABEL[o.meta])+'</td><td>'+esc(o.botRes||"No conversó")+'</td><td class="r num">'+(o.acuerdo?money(o.acuerdo.vAcuerdo):"")+'</td><td>'+(o.acuerdo?fmtDay(o.acuerdo.fAcuerdo):"")+'</td><td>'+esc(o.aseRes)+'</td><td class="r num">'+(o.paid?money(o.paid):"")+'</td><td>'+fmtDay(o.lastPay)+'</td><td>'+tag(o.cumpl)+'</td><td>'+tag(o.attr)+'</td></tr>').join(""):'<tr><td colspan="13" class="empty">No hay clientes con este filtro.</td></tr>')+'</tbody>';
   $("#pager").innerHTML='<span class="num">'+int(rows.length)+' registros</span><button class="btn" type="button" id="pgPrev" '+(page<=0?"disabled":"")+'>Anterior</button><span class="num">Página '+(page+1)+' de '+pages+'</span><button class="btn" type="button" id="pgNext" '+(page>=pages-1?"disabled":"")+'>Siguiente</button>';
   $("#pgPrev").onclick=()=>{page--;renderDetail();}; $("#pgNext").onclick=()=>{page++;renderDetail();};
 }
@@ -1080,7 +1091,10 @@ function renderCampaign(){
   $("#campTabs").innerHTML=Object.entries(CAMPAIGNS).map(([k,c])=>'<button type="button" role="tab" data-camp="'+k+'" aria-selected="'+(k===CAMP)+'">'+esc(c.nombre)+'</button>').join("");
   $("#campTabs").querySelectorAll("[data-camp]").forEach(b=>b.onclick=()=>switchCampaign(b.dataset.camp));
   $("#campHint").textContent=MODE==="desktop"?"Cada campaña tiene su propio histórico, sus códigos y sus tarifas.":"Cada campaña tiene sus propios códigos y tarifas.";
-  $("#campCodes").innerHTML=Object.entries(CAMPAIGNS[CAMP].codigos).map(([c,l])=>'<span><b>'+esc(c)+'</b> '+esc(l)+'</span>').join("");
+  const optC=$('#groupBy option[value="cartera"]'); optC.hidden=!tieneCampo("cartera"); optC.disabled=!tieneCampo("cartera"); if(!tieneCampo("cartera")) $("#groupBy").value="fecha";
+  $("#campCodes").innerHTML=Object.entries(CAMPAIGNS[CAMP].codigos).map(([c,l])=>'<span><b>'+esc(c)+'</b> '+esc(l)+'</span>').join("")+
+    '<div style="flex-basis:100%;margin-top:8px"><b>Columnas de la base de envío</b></div>'+CFG().campos.map(([,col,l])=>'<span><b>'+esc(col)+'</b> '+esc(l)+'</span>').join("")+
+    (porCredito()?'<span><b>'+esc(CFG().credito)+'</b> Crédito (cruce por cédula y crédito)</span>':'<span>Sin número de crédito: los pagos se cruzan solo por cédula</span>');
   document.title="Resultados del bot de cobranza: "+CAMPN();
 }
 let switching=false;
@@ -1120,7 +1134,7 @@ let downloads=null;
 if(window.claude&&typeof window.claude.use==="function"){ window.claude.use("downloads").then(d=>{ downloads=d; }).catch(()=>{}); }
 function detalleRows(list){
   return list.map(o=>({
-    "Cliente":o.name,"Cédula":o.nit,"Crédito":o.cred,"Teléfono":o.tel,"Estado cartera":o.cartera,"Días mora":o.diasMora,"Valor cuota":o.cuota,"Valor en mora":o.mora,
+    "Cliente":o.name,"Cédula":o.nit,...(porCredito()?{"Crédito":o.cred}:{}),"Teléfono":o.tel,...camposDe(o),
     "Fechas de envío":o.sends.map(s=>fmtDay(s.day)).join(", "),"Estado Meta":META_LABEL[o.meta],"Resultado bot":o.botRes||"No conversó",
     "Fecha acuerdo":o.acuerdo?fmtDay(o.acuerdo.fAcuerdo):"","Valor acuerdo":o.acuerdo?o.acuerdo.vAcuerdo:"","Nota del bot":o.acuerdo?o.acuerdo.nota:(o.gest.length?o.gest[o.gest.length-1].nota:""),
     "Resultado asesora":o.aseRes,"Asesora":o.aseAgent,"Valor pagado":o.paid||"","Último pago":fmtDay(o.lastPay),"Pagado en plazo del acuerdo":o.acuerdo?o.abonado:"","Cumplimiento":o.cumpl,"Atribución":o.attr
@@ -1140,7 +1154,7 @@ async function exportExcel(){
     ["Avisos"],...R.notices.map(n=>[n])
   ];
   const detalle=detalleRows(R.obs);
-  const pagos=[]; for(const o of R.obs) for(const p of o.pays) pagos.push({"Cliente":o.name,"Cédula":o.nit,"Crédito":o.cred,"Fecha de pago":fmtDay(p.day),"Valor pagado":p.valor,"Canal en cartera":p.canal,"Atribución":o.attr,"Resultado bot":o.botRes});
+  const pagos=[]; for(const o of R.obs) for(const p of o.pays) pagos.push({"Cliente":o.name,"Cédula":o.nit,"Obligación del pago":p.oblig||o.cred,"Fecha de pago":fmtDay(p.day),"Valor pagado":p.valor,"Canal en cartera":p.canal,"Atribución":o.attr,"Resultado bot":o.botRes});
   const grp=groupData("fecha").map(g=>({"Envío":typeof g.k==="number"?fmtDay(g.k):g.k,"Enviados":g.env,"Entregados":g.ent,"Leídos":g.lei,"Conversaron":g.conv,"Acuerdos bot":g.acu,"A asesora":g.ase,"Pagaron":g.pag,"Recaudo":g.rec}));
   const wb=XLSX.utils.book_new();
   const ws1=XLSX.utils.aoa_to_sheet(resumen); ws1["!cols"]=[{wch:38},{wch:22},{wch:16}];
@@ -1190,11 +1204,11 @@ async function exportHistorico(st){
   if(!HIST) return;
   const sheet=(name,rows)=>{ const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{"Sin información":""}]); if(rows.length){ ws["!cols"]=Object.keys(rows[0]).map(k=>({wch:Math.max(12,k.length+2)})); ws["!autofilter"]={ref:ws["!ref"]}; } XLSX.utils.book_append_sheet(wb,ws,name); };
   const wb=XLSX.utils.book_new();
-  sheet("Envíos",HIST.base.map(b=>({"Fecha envío":fmtDay(b.d),"Cédula":b.nit,"Crédito":b.cred,"Cliente":b.name,"Teléfono":b.tel,"Estado cartera":b.cartera,"Días mora":b.diasMora,"Valor cuota":b.cuota,"Valor en mora":b.mora,"Cuotas en mora":b.cuotas})));
+  sheet("Envíos",HIST.base.map(b=>({"Fecha envío":fmtDay(b.d),"Cédula":b.nit,...(porCredito()?{"Crédito":b.cred}:{}),"Cliente":b.name,"Teléfono":b.tel,...camposDe(b)})));
   sheet("Meta",HIST.campaign.map(c=>({"Fecha":fmtDay(c.d),"Cédula":c.nit,"Teléfono":c.tel,"Estado":META_LABEL[c.res||""]})));
   sheet("Conversaciones bot",HIST.gestiones.map(g=>({"Fecha y hora":fmtMins(g.mins),"Cédula":g.nit,"Teléfono":g.tel,"Resultado":g.res,"Fecha acuerdo":fmtDay(g.fAcuerdo),"Valor acuerdo":g.vAcuerdo||"","Valor mora":g.mora||"","Nota":g.nota})));
   sheet("Asesoras",HIST.chat.map(c=>({"Fecha":fmtDay(c.d),"Cédula":c.nit,"Teléfono":c.tel,"Tipificación":c.lbl,"Asesora":c.agent})));
-  sheet("Pagos",HIST.pagos.map(p=>({"Fecha de pago":fmtDay(p.d),"Cédula":p.nit,"Crédito":p.cred,"Valor pagado":p.valor,"Canal en cartera":p.canal,"Gestor":p.gestor})));
+  sheet("Pagos",HIST.pagos.map(p=>({"Fecha de pago":fmtDay(p.d),"Cédula":p.nit,"Obligación":p.oblig||p.cred,"Valor pagado":p.valor,"Canal en cartera":p.canal,"Gestor":p.gestor})));
   sheet("NLP",HIST.nlp.map(n=>({"Archivo":n.archivo||"","Fecha del archivo":fmtDay(n.d),"Caracteres":n.chars})));
   sheet("Cargas",(DBINFO&&DBINFO.cargas||[]).map(c=>({"Fecha de carga":c.fecha,"Archivos":c.archivos.map(a=>a.nombre||a).join(", "),"Información nueva":TIPOS.filter(t=>c.resumen&&c.resumen[t]).map(t=>cuantos(c.resumen[t],t)).join(", "),"Origen":c.origen})));
   await saveWorkbook(wb,"Historico_"+CAMPN()+"_"+fmtDay(todayDay()).replace(/\//g,"-")+".xlsx",st);
