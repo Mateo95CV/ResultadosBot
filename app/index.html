@@ -288,6 +288,10 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
         <label class="hint">hasta <input type="date" id="pHasta"></label>
       </span>
       <span class="hint" id="periodInfo"></span>
+      <span style="margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="status" id="reportStatus" role="status" aria-live="polite"></span>
+        <button class="btn primary" id="btnReport" type="button">Descargar reporte (HTML)</button>
+      </span>
     </div>
     <!-- META Y BOT -->
     <section class="section two">
@@ -969,12 +973,15 @@ function detailRows(){
     return true;
   }).sort((a,b)=>(b.paid-a.paid)||((b.acuerdo?1:0)-(a.acuerdo?1:0))||((b.gest.length?1:0)-(a.gest.length?1:0)));
 }
+function detailTableHTML(list){
+  const tag=(t)=>t?'<span class="tag '+tagClass(t)+'">'+esc(t)+'</span>':"";
+  return '<thead><tr><th>Cliente</th><th>Cédula</th><th>Crédito</th><th>Envíos</th><th>Meta</th><th>Bot</th><th class="r">Valor acuerdo</th><th>Fecha acuerdo</th><th>Asesora</th><th class="r">Pagado</th><th>Último pago</th><th>Cumplimiento</th><th>Atribución</th></tr></thead><tbody>'+
+    (list.length?list.map(o=>'<tr><td>'+esc(o.name)+'</td><td class="num">'+esc(o.nit)+'</td><td>'+(porCredito()?esc(o.cred):'<span class="hint">Unificado</span>')+'</td><td>'+o.sends.map(s=>shortDay(s.day)).join(", ")+'</td><td>'+esc(META_LABEL[o.meta])+'</td><td>'+esc(o.botRes||"No conversó")+'</td><td class="r num">'+(o.acuerdo?money(o.acuerdo.vAcuerdo):"")+'</td><td>'+(o.acuerdo?fmtDay(o.acuerdo.fAcuerdo):"")+'</td><td>'+esc(o.aseRes)+'</td><td class="r num">'+(o.paid?money(o.paid):"")+'</td><td>'+fmtDay(o.lastPay)+'</td><td>'+tag(o.cumpl)+'</td><td>'+tag(o.attr)+'</td></tr>').join(""):'<tr><td colspan="13" class="empty">No hay clientes con este filtro.</td></tr>')+'</tbody>';
+}
 function renderDetail(){
   const rows=detailRows(); const pages=Math.max(1,Math.ceil(rows.length/PAGE)); page=Math.min(page,pages-1);
   const slice=rows.slice(page*PAGE,page*PAGE+PAGE);
-  const tag=(t)=>t?'<span class="tag '+tagClass(t)+'">'+esc(t)+'</span>':"";
-  $("#detail").innerHTML='<thead><tr><th>Cliente</th><th>Cédula</th><th>Crédito</th><th>Envíos</th><th>Meta</th><th>Bot</th><th class="r">Valor acuerdo</th><th>Fecha acuerdo</th><th>Asesora</th><th class="r">Pagado</th><th>Último pago</th><th>Cumplimiento</th><th>Atribución</th></tr></thead><tbody>'+
-    (slice.length?slice.map(o=>'<tr><td>'+esc(o.name)+'</td><td class="num">'+esc(o.nit)+'</td><td>'+(porCredito()?esc(o.cred):'<span class="hint">Unificado</span>')+'</td><td>'+o.sends.map(s=>shortDay(s.day)).join(", ")+'</td><td>'+esc(META_LABEL[o.meta])+'</td><td>'+esc(o.botRes||"No conversó")+'</td><td class="r num">'+(o.acuerdo?money(o.acuerdo.vAcuerdo):"")+'</td><td>'+(o.acuerdo?fmtDay(o.acuerdo.fAcuerdo):"")+'</td><td>'+esc(o.aseRes)+'</td><td class="r num">'+(o.paid?money(o.paid):"")+'</td><td>'+fmtDay(o.lastPay)+'</td><td>'+tag(o.cumpl)+'</td><td>'+tag(o.attr)+'</td></tr>').join(""):'<tr><td colspan="13" class="empty">No hay clientes con este filtro.</td></tr>')+'</tbody>';
+  $("#detail").innerHTML=detailTableHTML(slice);
   $("#pager").innerHTML='<span class="num">'+int(rows.length)+' registros</span><button class="btn" type="button" id="pgPrev" '+(page<=0?"disabled":"")+'>Anterior</button><span class="num">Página '+(page+1)+' de '+pages+'</span><button class="btn" type="button" id="pgNext" '+(page>=pages-1?"disabled":"")+'>Siguiente</button>';
   $("#pgPrev").onclick=()=>{page--;renderDetail();}; $("#pgNext").onclick=()=>{page++;renderDetail();};
 }
@@ -1166,6 +1173,59 @@ async function exportExcel(){
   const fname="Resultados_bot_"+CAMPN()+"_"+(R.firstSend!=null?fmtDay(R.firstSend).replace(/\//g,"-")+"_a_"+fmtDay(R.lastSend).replace(/\//g,"-"):"periodo")+".xlsx";
   await saveWorkbook(wb,fname,st);
 }
+async function saveTextFile(text,fname,mime,st,desc,ext){
+  const bytes=new TextEncoder().encode(text);
+  const api=window.pywebview&&window.pywebview.api;
+  if(MODE==="desktop"&&api){
+    if(!api.guardar_archivo){ st.className="status err"; st.textContent="Esta versión del programa no puede guardar reportes. Actualiza el ejecutable."; return; }
+    let bin=""; for(let i=0;i<bytes.length;i+=0x8000) bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));
+    const r=await api.guardar_archivo(btoa(bin),fname,desc,ext);
+    if(r&&r.ok){ st.innerHTML='Guardado en '+esc(r.ruta)+' <button class="btn" type="button" id="btnOpenRep">Abrir</button>'; $("#btnOpenRep").onclick=()=>api.abrir_archivo(r.ruta); }
+    else if(r&&r.cancelado) st.textContent="Descarga cancelada.";
+    else { st.className="status err"; st.textContent="No se pudo guardar: "+((r&&r.error)||"error desconocido"); }
+    return;
+  }
+  const blob=new Blob([bytes],{type:mime});
+  if(downloads){
+    try{ await downloads.save({filename:fname,data:blob}); st.textContent="Reporte descargado."; }
+    catch(e){ if(e&&e.code==="declined") st.textContent="Descarga cancelada."; else { st.className="status err"; st.textContent="No se pudo descargar el archivo en esta vista."; } }
+  } else {
+    try{ const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=fname; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000); st.textContent="Reporte generado."; }
+    catch(e){ st.className="status err"; st.textContent="La descarga no está disponible en esta vista."; }
+  }
+}
+const FILTER_LABEL={todos:"Todos",pago:"Con pago",acuerdo:"Acuerdos del bot",asesor:"Pasaron a asesor",incumplido:"Acuerdos incumplidos"};
+async function exportReporte(){
+  const st=$("#reportStatus"); st.className="status"; st.textContent="";
+  if(!R||!R.obs.length){ st.textContent="No hay resultados en este periodo."; return; }
+  st.innerHTML='<span class="spinner"></span>Preparando el reporte…';
+  await new Promise(r=>setTimeout(r,20));
+  try{
+    const css=[...document.querySelectorAll("style")].map(x=>x.textContent).join("\n");
+    const clone=$("#results").cloneNode(true);
+    clone.classList.remove("hidden"); clone.removeAttribute("id");
+    clone.querySelectorAll(".periodbar,.toolbar,.pager,.head-actions,.status").forEach(n=>n.remove());
+    const rows=detailRows();
+    const det=clone.querySelector("#detail"); det.innerHTML=detailTableHTML(rows);
+    const hd=clone.querySelector("#h-detail"); if(hd) hd.insertAdjacentHTML("afterend",'<p class="hint">'+int(rows.length)+' registros. Filtro: '+esc(FILTER_LABEL[filter])+(query?', búsqueda “'+esc(query)+'”':"")+'.</p>');
+    const hg=clone.querySelector("#h-group"); if(hg) hg.insertAdjacentHTML("afterend",'<p class="hint">Agrupado por '+($("#groupBy").value==="fecha"?"fecha de envío":"estado de cartera")+'.</p>');
+    clone.querySelectorAll("[id]").forEach(n=>n.removeAttribute("id"));
+    const brand=document.querySelector(".brand"); const per=R.range?"del "+fmtDay(R.range[0])+" al "+fmtDay(R.range[1]):"todo el histórico";
+    const now=new Date(); const gen=fmtDay(todayDay())+" "+String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0");
+    const reglas='<section class="section"><div class="panel"><h2>Reglas usadas en este reporte</h2><div class="codes" style="margin-top:10px">'+
+      '<span>Días de gracia: <b>'+P.gracia+'</b></span><span>Ventana de atribución: <b>'+P.ventana+' días</b></span>'+
+      '<span>Cruce de pagos: <b>'+(porCredito()?"cédula y crédito":"solo cédula (créditos unificados)")+'</b></span>'+
+      '<span>Tarifa Meta: <b>'+money2(P.tarifaMeta)+'</b>'+(P.cobrarNoEntregados?" (incluye no entregados)":" (solo entregados)")+'</span>'+
+      '<span>Bot: <b>'+P.interacciones+' × '+money2(P.costoInteraccion)+'</b> por conversación</span><span>NLP: <b>'+P.costoChar+'</b> por carácter</span></div></div></section>';
+    const html='<!DOCTYPE html>\n<html lang="es">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Resultados del bot: '+esc(CAMPN())+' '+esc(per)+'</title>\n<style>'+css+
+      '\n.report-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}\n@media print{body{background:#fff}.wrap{max-width:none;padding:0}.panel,.m,.step,tr{break-inside:avoid}.tablebox{overflow:visible;border:0}th{position:static}}</style>\n</head>\n<body>\n<div class="wrap">\n<header class="top"><div>'+(brand?brand.outerHTML:"")+
+      '<h1>Resultados del bot de cobranza: '+esc(CAMPN())+'</h1><div class="report-meta"><span class="pill">Envíos <b>'+esc(per)+'</b></span>'+(R.pMax!=null?'<span class="pill">Pagos cargados hasta <b>'+fmtDay(R.pMax)+'</b></span>':"")+'<span class="pill">Generado el <b>'+gen+'</b></span></div></div></header>\n'+
+      ($("#notices").innerHTML?'<div class="notices">'+$("#notices").innerHTML+'</div>':"")+clone.innerHTML+reglas+'\n</div>\n</body>\n</html>';
+    const f="Reporte_bot_"+CAMPN()+"_"+(R.range?fmtDay(R.range[0]).replace(/\//g,"-")+"_a_"+fmtDay(R.range[1]).replace(/\//g,"-"):"historico")+".html";
+    st.textContent="";
+    await saveTextFile(html,f,"text/html",st,"Página web","html");
+  }catch(e){ console.error(e); st.className="status err"; st.textContent="No se pudo generar el reporte: "+(e&&e.message||e); }
+}
 async function saveWorkbook(wb,fname,st){
   const out=XLSX.write(wb,{bookType:"xlsx",type:"array"});
   if(window.pywebview&&window.pywebview.api&&window.pywebview.api.guardar_excel){
@@ -1254,6 +1314,7 @@ $("#search").addEventListener("input",e=>{ query=e.target.value; page=0; renderD
 $("#btnExport").addEventListener("click",exportExcel);
 $("#btnExportDet").addEventListener("click",exportDetalle);
 $("#btnExportGrp").addEventListener("click",exportGrupo);
+$("#btnReport").addEventListener("click",exportReporte);
 function syncInputs(){ document.querySelectorAll("[data-p]").forEach(el=>{ const k=el.dataset.p; if(el.type==="checkbox") el.checked=!!P[k]; else el.value=P[k]; }); }
 document.querySelectorAll("[data-p]").forEach(el=>el.addEventListener("change",()=>{ const k=el.dataset.p; P[k]=el.type==="checkbox"?el.checked:Math.max(0,parseFloat(el.value)||0); saveParams(); if(R) run(); }));
 $("#btnDefaults").addEventListener("click",()=>{ P=Object.assign({},DEFAULTS); saveParams(); syncInputs(); if(R) run(); });
