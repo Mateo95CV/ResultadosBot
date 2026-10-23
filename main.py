@@ -128,6 +128,28 @@ class Api:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
 
+    def guardar_archivo(self, contenido_b64, nombre, descripcion="Archivo", extension="html"):
+        """Guarda cualquier archivo que prepare la página (por ejemplo, el reporte HTML)."""
+        extension = "".join(ch for ch in str(extension) if ch.isalnum()) or "html"
+        ruta = primera(self._ventana.create_file_dialog(
+            tipo_dialogo("SAVE"),
+            directory=carpeta_descargas(),
+            save_filename=nombre,
+            file_types=(f"{descripcion} (*.{extension})",),
+        ))
+        if not ruta:
+            return {"ok": False, "cancelado": True}
+        if not str(ruta).lower().endswith("." + extension):
+            ruta = f"{ruta}.{extension}"
+        try:
+            with open(ruta, "wb") as f:
+                f.write(base64.b64decode(contenido_b64))
+            return {"ok": True, "ruta": ruta}
+        except PermissionError:
+            return {"ok": False, "error": "el archivo está abierto o no hay permiso para guardar en esa carpeta."}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
     def abrir_archivo(self, ruta):
         try:
             abrir_en_windows(ruta)
