@@ -464,8 +464,8 @@ const TYPES = [
    test:h=>h.includes("DESCRIPTION_COD_ACT")&&h.includes("CUSTOMER_PHONE")},
   {id:"nlp", t:"Consumo NLP", d:"Detalle de NLP de Wolkvox (créditos), o el HistCDR anterior (caracteres).",
    test:h=>(h.includes("NLP_TYPE")||h.includes("TYPE_NLP"))&&(h.includes("TOTAL_CHARS")||h.includes("TOTAL_CREDITS"))},
-  {id:"pagos", t:"Pagos", d:"Informe de pagos de cartera. Idealmente desde el primer envío hasta hoy.", req:true,
-   test:h=>h.includes("Valor Pagado")&&h.includes("Nit")&&h.includes("Fecha de Pago")}
+  {id:"pagos", t:"Pagos", d:"Informe de pagos de cartera (formato Agaval o reporte de pagos de Haceb). Idealmente desde el primer envío hasta hoy.", req:true,
+   test:h=>(h.includes("Valor Pagado")&&h.includes("Nit")&&h.includes("Fecha de Pago"))||(h.includes("IDENTIFICATION")&&h.includes("FECHA_PAGO")&&(h.includes("MONTO_PAGO_TOTAL")||h.includes("MONTO_APLICADO")))}
 ];
 let FILES = []; // {name,size,type,headers,rows}
 
@@ -583,7 +583,7 @@ async function addFiles(list){
       const r=JSON.parse(await API().historial_guardar(JSON.stringify(payload)));
       if(r.error) throw new Error(r.error);
       nuevos.forEach(f=>f.saved=true);
-      st.textContent=saveMessage(r,nuevos)+(C.nlpOtra?" Se omitieron "+int(C.nlpOtra)+" consumos NLP de otra campaña.":"")+(unk?" "+unk:"");
+      st.textContent=saveMessage(r,nuevos)+(C.pagosExcluidos?" No se contaron "+int(C.pagosExcluidos)+" movimientos de retracto o anulación de compra (no son pagos).":"")+(C.nlpOtra?" Se omitieron "+int(C.nlpOtra)+" consumos NLP de otra campaña.":"")+(unk?" "+unk:"");
       if(nuevos.some(f=>f.type==="pagos")&&!known.length&&!nuevos.some(f=>f.type==="base")) st.textContent+=" Ojo: no hay bases de envío guardadas, así que de este archivo de pagos no se guardó ningún pago. Carga primero la base y luego vuelve a cargar los pagos.";
       await reloadHistory();
     }catch(e){ console.error(e); st.className="status err"; st.textContent="No se pudo guardar en el histórico: "+(e&&e.message||e); }
@@ -699,6 +699,24 @@ function canonFromFiles(files,knownNits){
   }
   for(const f of files.filter(f=>f.type==="pagos")){
     let mn=null,mx=null;
+    const formatoHaceb=f.headers.includes("IDENTIFICATION")&&f.headers.includes("FECHA_PAGO");
+    if(formatoHaceb){
+      /* Formato de pagos de Haceb: un registro por movimiento aplicado a un pagaré */
+      for(const r of f.rows){
+        const o=rowObj(f.headers,r); const d=toDay(o.FECHA_PAGO);
+        if(d!=null){ mn=mn==null?d:Math.min(mn,d); mx=mx==null?d:Math.max(mx,d); }
+        const tipo=fixText(o.NOMBRE);
+        if(/RETRACTO|ANULACI/i.test(tipo)){ C.pagosExcluidos=(C.pagosExcluidos||0)+1; continue; } // devoluciones y anulaciones no son pagos
+        const v=num(blank(o.MONTO_PAGO_TOTAL)?o.MONTO_APLICADO:o.MONTO_PAGO_TOTAL); if(v<=0) continue;
+        const nit=normId(o.IDENTIFICATION); if(!nits.has(nit)) continue;
+        const oblig=normCred(o.NUMERO_PAGARE);
+        const cred=porCredito()?oblig:"";
+        push("pagos",{oblig,k:[nit,oblig,d,String(o.NUM_DOC??"").trim(),tipo,v].join("|"),
+          d,nit,cred,valor:v,canal:tipo,gestor:fixText(o.AGENCIA)});
+      }
+      if(mn!=null) C.cobertura.push([mn,mx]);
+      continue;
+    }
     for(const r of f.rows){
       const o=rowObj(f.headers,r); const d=toDay(o["Fecha de Pago"]);
       if(d!=null){ mn=mn==null?d:Math.min(mn,d); mx=mx==null?d:Math.max(mx,d); }
