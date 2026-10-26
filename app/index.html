@@ -409,6 +409,11 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
       </label>
       <label>Costo NLP por carácter ($)
         <input type="number" min="0" step="0.000001" data-p="costoChar">
+        <span>Para archivos HistCDR del formato anterior (TOTAL_CHARS).</span>
+      </label>
+      <label>Costo NLP por crédito ($)
+        <input type="number" min="0" step="0.000001" data-p="costoCredito">
+        <span>Para archivos “Detalle de NLP” del formato nuevo (TOTAL_CREDITS).</span>
       </label>
     </div>
     <div style="margin-top:16px"><b>Códigos del bot en esta campaña</b><div class="codes" id="campCodes"></div></div>
@@ -421,7 +426,7 @@ details.settings summary{cursor:pointer;font-weight:700;font-size:1.05rem;paddin
 "use strict";
 
 /* ---------- Parámetros ---------- */
-const DEFAULTS = {gracia:2, ventana:30, tarifaMeta:61, cobrarNoEntregados:false, interacciones:4, costoInteraccion:11, costoChar:0.002146};
+const DEFAULTS = {gracia:2, ventana:30, tarifaMeta:61, cobrarNoEntregados:false, interacciones:4, costoInteraccion:11, costoChar:0.002146, costoCredito:0.002146};
 /* Campañas: cada una con sus códigos del bot. "prioridad" indica si manda el código o el texto del archivo de gestiones. */
 const CAMPAIGNS = {
   agaval:{nombre:"Agaval", prioridad:"texto", codigos:{"01":"Acuerdo de pago","09":"Contactado","23":"Asesor","11":"Equivocado"},
@@ -457,8 +462,8 @@ const TYPES = [
    test:h=>h.includes("Resultado")&&h.includes("Documento")&&h.includes("Fecha Acuerdo")},
   {id:"chat", t:"Gestión de asesoras", d:"HistChat de Wolkvox: tipificación de las asesoras.",
    test:h=>h.includes("DESCRIPTION_COD_ACT")&&h.includes("CUSTOMER_PHONE")},
-  {id:"nlp", t:"Consumo NLP", d:"HistCDR de Wolkvox: caracteres consumidos por la inteligencia artificial.",
-   test:h=>h.includes("NLP_TYPE")&&h.includes("TOTAL_CHARS")},
+  {id:"nlp", t:"Consumo NLP", d:"Detalle de NLP de Wolkvox (créditos), o el HistCDR anterior (caracteres).",
+   test:h=>(h.includes("NLP_TYPE")||h.includes("TYPE_NLP"))&&(h.includes("TOTAL_CHARS")||h.includes("TOTAL_CREDITS"))},
   {id:"pagos", t:"Pagos", d:"Informe de pagos de cartera. Idealmente desde el primer envío hasta hoy.", req:true,
    test:h=>h.includes("Valor Pagado")&&h.includes("Nit")&&h.includes("Fecha de Pago")}
 ];
@@ -578,15 +583,15 @@ async function addFiles(list){
       const r=JSON.parse(await API().historial_guardar(JSON.stringify(payload)));
       if(r.error) throw new Error(r.error);
       nuevos.forEach(f=>f.saved=true);
-      st.textContent=saveMessage(r,nuevos)+(unk?" "+unk:"");
+      st.textContent=saveMessage(r,nuevos)+(C.nlpOtra?" Se omitieron "+int(C.nlpOtra)+" consumos NLP de otra campaña.":"")+(unk?" "+unk:"");
       if(nuevos.some(f=>f.type==="pagos")&&!known.length&&!nuevos.some(f=>f.type==="base")) st.textContent+=" Ojo: no hay bases de envío guardadas, así que de este archivo de pagos no se guardó ningún pago. Carga primero la base y luego vuelve a cargar los pagos.";
       await reloadHistory();
     }catch(e){ console.error(e); st.className="status err"; st.textContent="No se pudo guardar en el histórico: "+(e&&e.message||e); }
   }
   run();
 }
-const TIPO_NOMBRE={base:"envíos",campaign:"mensajes de Meta",gestiones:"conversaciones del bot",chat:"chats de asesoras",nlp:"archivos NLP",pagos:"pagos"};
-const cuantos=(n,t)=>int(n)+" "+(n===1?({base:"envío",campaign:"mensaje de Meta",gestiones:"conversación del bot",chat:"chat de asesora",nlp:"archivo NLP",pagos:"pago"})[t]:TIPO_NOMBRE[t]);
+const TIPO_NOMBRE={base:"envíos",campaign:"mensajes de Meta",gestiones:"conversaciones del bot",chat:"chats de asesoras",nlp:"registros NLP",pagos:"pagos"};
+const cuantos=(n,t)=>int(n)+" "+(n===1?({base:"envío",campaign:"mensaje de Meta",gestiones:"conversación del bot",chat:"chat de asesora",nlp:"registro NLP",pagos:"pago"})[t]:TIPO_NOMBRE[t]);
 function saveMessage(r,files){
   const parts=TIPOS.filter(t=>r.nuevos&&r.nuevos[t]).map(t=>cuantos(r.nuevos[t],t));
   const rep=TIPOS.reduce((a,t)=>a+((r.repetidos&&r.repetidos[t])||0),0);
@@ -622,6 +627,7 @@ function dayFromName(name){
   m=String(name).match(/(20\d{2})(\d{2})(\d{2})/); if(m) return Date.UTC(+m[1],+m[2]-1,+m[3])/864e5;
   return null;
 }
+function toSecs(v){ const d=toDay(v); if(d==null) return null; const t=String(v??"").match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/); return d*86400+(t?(+t[1]*3600+ +t[2]*60+ +(t[3]||0)):0); }
 function todayDay(){ const n=new Date(); return Date.UTC(n.getFullYear(),n.getMonth(),n.getDate())/864e5; }
 
 /* Convierte los archivos leídos en registros únicos con su clave.
@@ -664,9 +670,32 @@ function canonFromFiles(files,knownNits){
     push("chat",{k:id,d:toDay(o.DATE),nit,tel,lbl,agent:fixText(o.AGENT_NAME)});
   }
   for(const f of files.filter(f=>f.type==="nlp")){
-    let chars=0,n=0; for(const r of f.rows){ const o=rowObj(f.headers,r); if(String(o.NLP_TYPE).toUpperCase()==="TOTAL") continue; chars+=num(o.TOTAL_CHARS); n++; }
-    const d=dayFromName(f.name)??todayDay();
-    push("nlp",{k:"nlp|"+f.name+"|"+n+"|"+chars,d,chars,archivo:f.name});
+    if(f.headers.includes("TOTAL_CREDITS")){
+      /* Formato nuevo: un registro por consumo, con fecha y sesión */
+      const rows=[];
+      for(const r of f.rows){
+        const o=rowObj(f.headers,r); const tipo=String(o.TYPE_NLP??"").trim(); if(!tipo||tipo.toUpperCase()==="TOTAL") continue;
+        const ses=String(o["SESSION ID"]??"").replace(/^'+/,"").trim();
+        const m=ses.match(/\.andes-([a-z0-9]+)-/i)||tipo.match(/-(agaval|haceb)-/i);
+        rows.push({tipo,ses,fecha:String(o.DATE??"").trim(),t:toSecs(o.DATE),d:toDay(o.DATE),cr:num(o.TOTAL_CREDITS),camp:m?m[1].toLowerCase():""});
+      }
+      const conCamp=rows.filter(x=>x.camp&&x.t!=null).sort((a,b)=>a.t-b.t);
+      const camps=new Set(conCamp.map(x=>x.camp));
+      const near=t=>{ let lo=0,hi=conCamp.length-1,best=null; while(lo<=hi){ const mid=(lo+hi)>>1; if(best==null||Math.abs(conCamp[mid].t-t)<Math.abs(best.t-t)) best=conCamp[mid]; if(conCamp[mid].t<t) lo=mid+1; else hi=mid-1; } return best&&Math.abs(best.t-t)<=300?best.camp:null; };
+      const occ=new Map();
+      for(const x of rows){
+        const base=[x.tipo,x.ses,x.fecha,x.cr].join("|"); const n=(occ.get(base)||0)+1; occ.set(base,n);
+        let camp=x.camp;
+        if(!camp) camp=camps.size===0?CAMP:camps.size===1?[...camps][0]:(x.t!=null?near(x.t):null); // consumos generales: a la campaña de la conversación más cercana
+        if(camp!==CAMP){ C.nlpOtra=(C.nlpOtra||0)+1; continue; }
+        push("nlp",{k:"nlpc|"+base+"#"+n,d:x.d,chars:x.cr,unidad:"creditos",archivo:f.name});
+      }
+    } else {
+      /* Formato anterior: total del archivo, fechado por el nombre */
+      let chars=0,n=0; for(const r of f.rows){ const o=rowObj(f.headers,r); if(String(o.NLP_TYPE).toUpperCase()==="TOTAL") continue; chars+=num(o.TOTAL_CHARS); n++; }
+      const d=dayFromName(f.name)??todayDay();
+      push("nlp",{k:"nlp|"+f.name+"|"+n+"|"+chars,d,chars,archivo:f.name});
+    }
   }
   for(const f of files.filter(f=>f.type==="pagos")){
     let mn=null,mx=null;
@@ -818,7 +847,13 @@ function compute(C,rng){
   }
 
   /* NLP */
-  let chars=0; for(const n of C.nlp){ if(n.d!=null&&(n.d<d1||n.d>d2+7)) continue; chars+=n.chars; }
+  let chars=0, credits=0;
+  const nextSend=Math.min(...C.base.map(b=>b.d).filter(d=>d!=null&&d>d2));
+  const finCons=Math.min(d2+2,isFinite(nextSend)?nextSend-1:Infinity);
+  for(const n of C.nlp){
+    if(n.unidad==="creditos"){ if(n.d!=null&&(n.d<d1||n.d>finCons)) continue; credits+=n.chars; }
+    else { if(n.d!=null&&(n.d<d1||n.d>d2+7)) continue; chars+=n.chars; }
+  }
 
   /* Indicadores */
   const obs=[...oblig.values()];
@@ -834,7 +869,7 @@ function compute(C,rng){
   const attr={}; for(const a of ["Directo","Asesor","Indirecto"]){ const g=obs.filter(o=>o.attr===a); attr[a]={n:g.length,v:g.reduce((s,o)=>s+o.paid,0)}; }
 
   const cobrables=P.cobrarNoEntregados?enviados:entregados;
-  const costMeta=cobrables*P.tarifaMeta, costBot=gestTotal*P.interacciones*P.costoInteraccion, costNlp=chars*P.costoChar;
+  const costMeta=cobrables*P.tarifaMeta, costBot=gestTotal*P.interacciones*P.costoInteraccion, costNlp=chars*P.costoChar+credits*P.costoCredito;
 
   /* Avisos */
   if(!has("base")) notices.push("Falta la base de envío. Sin ella no se puede saber a quién se le escribió ni por cuál crédito.");
@@ -854,7 +889,7 @@ function compute(C,rng){
   if(otherCredN) notices.push(int(otherCredN)+" pago(s) por "+money(otherCredV)+" de estos clientes fueron a créditos que no estaban en la gestión; no se cuentan.");
 
   return {obs,sends,notices,metaCount,enviados,entregados,leidos,conv,acuerdos,aAsesor,pagaron,attr,
-    cost:{meta:costMeta,bot:costBot,nlp:costNlp,total:costMeta+costBot+costNlp,cobrables,chars,gestTotal},
+    cost:{meta:costMeta,bot:costBot,nlp:costNlp,total:costMeta+costBot+costNlp,cobrables,chars,credits,gestTotal},
     pMin,pMax,firstSend:isFinite(firstSend)?firstSend:null,lastSend:isFinite(lastSend)?lastSend:null,has};
 }
 
@@ -867,7 +902,7 @@ function renderChecklist(){
     const fs=FILES.filter(f=>f.type===T.id);
     const inDb=MODE==="desktop"&&!CLEARED&&DBINFO&&(DBINFO.conteo||{})[T.id]>0;
     const names=(fs.length?fs.map(f=>esc(f.name)+" ("+int(f.rows.length)+" filas)").join("<br>"):esc(T.d))+
-      (inDb?'<div class="h">En el histórico: '+int(DBINFO.conteo[T.id])+(T.id==="nlp"?" archivo(s)":" registros")+'</div>':"");
+      (inDb?'<div class="h">En el histórico: '+int(DBINFO.conteo[T.id])+" registros"+'</div>':"");
     const okk=fs.length||inDb;
     return '<li class="'+(okk?"ok":"")+'"><span class="mark" aria-hidden="true">'+(okk?ok:"")+'</span><div><div class="t">'+esc(T.t)+(T.req&&!okk?'<span class="req">Necesario</span>':"")+
       '<span class="visually-hidden">'+(okk?" cargado":" pendiente")+'</span></div><div class="d">'+names+'</div></div></li>';
@@ -928,7 +963,7 @@ function renderCosts(){
   $("#costs").innerHTML=
     '<div class="c-l">Mensajes de Meta <br><small class="num">'+int(c.cobrables)+' × '+money2(P.tarifaMeta)+'</small></div><div class="c-v num">'+money(c.meta)+'</div>'+
     '<div class="c-l">Conversaciones del bot<br><small class="num">'+int(c.gestTotal)+' × '+P.interacciones+' interacciones × '+money2(P.costoInteraccion)+'</small></div><div class="c-v num">'+money(c.bot)+'</div>'+
-    '<div class="c-l">Inteligencia artificial (NLP)<br><small class="num">'+int(c.chars)+' caracteres</small></div><div class="c-v num">'+money(c.nlp)+'</div>'+
+    '<div class="c-l">Inteligencia artificial (NLP)<br><small class="num">'+[c.credits?int(c.credits)+' créditos':"",c.chars?int(c.chars)+' caracteres':""].filter(Boolean).join(" y ")+(c.credits||c.chars?"":"Sin consumo en el periodo")+'</small></div><div class="c-v num">'+money(c.nlp)+'</div>'+
     '<div class="sep"></div><div class="c-l tot">Total</div><div class="c-v tot num">'+money(c.total)+'</div>'+
     '<div class="c-l">Costo por conversación</div><div class="c-v num">'+(R.conv?money(c.total/R.conv):"–")+'</div>'+
     '<div class="c-l">Costo por acuerdo del bot</div><div class="c-v num">'+(R.acuerdos?money(c.total/R.acuerdos):"–")+'</div>';
@@ -1157,7 +1192,7 @@ async function exportExcel(){
     ["Mensajes enviados",R.enviados],["Leídos",R.leidos],["Entregados (incluye leídos)",R.entregados],["Aceptados sin confirmar",R.metaCount.accepted],["Fallidos",R.metaCount.failed],["Conversaron con el bot",R.conv],["Acuerdos del bot",R.acuerdos],["Pasaron a asesora",R.aAsesor],["Clientes que pagaron",R.pagaron],[],
     ["Atribución","Clientes","Valor"],["Directo",a.Directo.n,a.Directo.v],["Asesor",a.Asesor.n,a.Asesor.v],["Indirecto",a.Indirecto.n,a.Indirecto.v],[],
     ["Costo Meta",Math.round(c.meta)],["Costo bot",Math.round(c.bot)],["Costo NLP",Math.round(c.nlp)],["Costo total",Math.round(c.total)],[],
-    ["Reglas usadas"],["Días de gracia",P.gracia],["Ventana de atribución (días)",P.ventana],["Tarifa Meta",P.tarifaMeta],["Cobrar no entregados",P.cobrarNoEntregados?"Sí":"No"],["Interacciones por conversación",P.interacciones],["Costo por interacción",P.costoInteraccion],["Costo NLP por carácter",P.costoChar],[],
+    ["Reglas usadas"],["Días de gracia",P.gracia],["Ventana de atribución (días)",P.ventana],["Tarifa Meta",P.tarifaMeta],["Cobrar no entregados",P.cobrarNoEntregados?"Sí":"No"],["Interacciones por conversación",P.interacciones],["Costo por interacción",P.costoInteraccion],["Costo NLP por carácter",P.costoChar],["Costo NLP por crédito",P.costoCredito],[],
     ["Avisos"],...R.notices.map(n=>[n])
   ];
   const detalle=detalleRows(R.obs);
@@ -1216,7 +1251,7 @@ async function exportReporte(){
       '<span>Días de gracia: <b>'+P.gracia+'</b></span><span>Ventana de atribución: <b>'+P.ventana+' días</b></span>'+
       '<span>Cruce de pagos: <b>'+(porCredito()?"cédula y crédito":"solo cédula (créditos unificados)")+'</b></span>'+
       '<span>Tarifa Meta: <b>'+money2(P.tarifaMeta)+'</b>'+(P.cobrarNoEntregados?" (incluye no entregados)":" (solo entregados)")+'</span>'+
-      '<span>Bot: <b>'+P.interacciones+' × '+money2(P.costoInteraccion)+'</b> por conversación</span><span>NLP: <b>'+P.costoChar+'</b> por carácter</span></div></div></section>';
+      '<span>Bot: <b>'+P.interacciones+' × '+money2(P.costoInteraccion)+'</b> por conversación</span><span>NLP: <b>'+P.costoCredito+'</b> por crédito, <b>'+P.costoChar+'</b> por carácter</span></div></div></section>';
     const html='<!DOCTYPE html>\n<html lang="es">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>Resultados del bot: '+esc(CAMPN())+' '+esc(per)+'</title>\n<style>'+css+
       '\n.report-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}\n@media print{body{background:#fff}.wrap{max-width:none;padding:0}.panel,.m,.step,tr{break-inside:avoid}.tablebox{overflow:visible;border:0}th{position:static}}</style>\n</head>\n<body>\n<div class="wrap">\n<header class="top"><div>'+(brand?brand.outerHTML:"")+
       '<h1>Resultados del bot de cobranza: '+esc(CAMPN())+'</h1><div class="report-meta"><span class="pill">Envíos <b>'+esc(per)+'</b></span>'+(R.pMax!=null?'<span class="pill">Pagos cargados hasta <b>'+fmtDay(R.pMax)+'</b></span>':"")+'<span class="pill">Generado el <b>'+gen+'</b></span></div></div></header>\n'+
@@ -1269,7 +1304,7 @@ async function exportHistorico(st){
   sheet("Conversaciones bot",HIST.gestiones.map(g=>({"Fecha y hora":fmtMins(g.mins),"Cédula":g.nit,"Teléfono":g.tel,"Resultado":g.res,"Fecha acuerdo":fmtDay(g.fAcuerdo),"Valor acuerdo":g.vAcuerdo||"","Valor mora":g.mora||"","Nota":g.nota})));
   sheet("Asesoras",HIST.chat.map(c=>({"Fecha":fmtDay(c.d),"Cédula":c.nit,"Teléfono":c.tel,"Tipificación":c.lbl,"Asesora":c.agent})));
   sheet("Pagos",HIST.pagos.map(p=>({"Fecha de pago":fmtDay(p.d),"Cédula":p.nit,"Obligación":p.oblig||p.cred,"Valor pagado":p.valor,"Canal en cartera":p.canal,"Gestor":p.gestor})));
-  sheet("NLP",HIST.nlp.map(n=>({"Archivo":n.archivo||"","Fecha del archivo":fmtDay(n.d),"Caracteres":n.chars})));
+  sheet("NLP",HIST.nlp.map(n=>({"Archivo":n.archivo||"","Fecha":fmtDay(n.d),"Cantidad":n.chars,"Unidad":n.unidad==="creditos"?"Créditos":"Caracteres"})));
   sheet("Cargas",(DBINFO&&DBINFO.cargas||[]).map(c=>({"Fecha de carga":c.fecha,"Archivos":c.archivos.map(a=>a.nombre||a).join(", "),"Información nueva":TIPOS.filter(t=>c.resumen&&c.resumen[t]).map(t=>cuantos(c.resumen[t],t)).join(", "),"Origen":c.origen})));
   await saveWorkbook(wb,"Historico_"+CAMPN()+"_"+fmtDay(todayDay()).replace(/\//g,"-")+".xlsx",st);
 }
